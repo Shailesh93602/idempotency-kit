@@ -20,7 +20,9 @@ export type {
 
 export {
   withIdempotency,
+  fingerprint,
   IdempotencyInProgressError,
+  IdempotencyFingerprintMismatchError,
   type WithIdempotencyOptions,
   type IdempotentResult,
 } from "./idempotency.js";

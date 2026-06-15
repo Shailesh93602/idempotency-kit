@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   withIdempotency,
+  fingerprint,
   IdempotencyInProgressError,
+  IdempotencyFingerprintMismatchError,
   MemoryIdempotencyStore,
 } from "../src/index.js";
 
@@ -93,6 +95,46 @@ describe("withIdempotency", () => {
       now: () => t,
     });
     expect(r3).toEqual({ value: "third", replayed: false }); // expired → re-runs
+  });
+
+  it("rejects a key reused with a different request fingerprint", async () => {
+    const store = new MemoryIdempotencyStore();
+    const charge = vi.fn(async () => ({ chargeId: "ch_1" }));
+
+    const first = await withIdempotency("key-A", charge, {
+      store,
+      fingerprint: fingerprint({ amount: 1000, currency: "usd" }),
+    });
+    expect(first.replayed).toBe(false);
+
+    // Same key, different payload → must fail loudly, not replay the $10 charge.
+    await expect(
+      withIdempotency("key-A", charge, {
+        store,
+        fingerprint: fingerprint({ amount: 9999, currency: "usd" }),
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyFingerprintMismatchError);
+    expect(charge).toHaveBeenCalledTimes(1);
+
+    // Same key, same payload (retry) → replays cleanly.
+    const retry = await withIdempotency("key-A", charge, {
+      store,
+      fingerprint: fingerprint({ amount: 1000, currency: "usd" }),
+    });
+    expect(retry).toEqual({ value: { chargeId: "ch_1" }, replayed: true });
+    expect(charge).toHaveBeenCalledTimes(1);
+  });
+
+  it("fingerprint is key-order independent and distinguishes different values", () => {
+    expect(fingerprint({ a: 1, b: 2 })).toBe(fingerprint({ b: 2, a: 1 }));
+    expect(fingerprint({ a: 1, b: { c: 3, d: 4 } })).toBe(
+      fingerprint({ b: { d: 4, c: 3 }, a: 1 }),
+    );
+    expect(fingerprint({ amount: 1000 })).not.toBe(
+      fingerprint({ amount: 1001 }),
+    );
+    expect(fingerprint([1, 2, 3])).not.toBe(fingerprint([3, 2, 1]));
+    expect(fingerprint("10")).not.toBe(fingerprint(10));
   });
 
   it("supports custom serialize/deserialize", async () => {

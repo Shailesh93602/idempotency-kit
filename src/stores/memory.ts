@@ -20,16 +20,32 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     return !!rec && now - rec.createdAt < this.ttlMs;
   }
 
-  async claim(key: string, now: number): Promise<IdempotencyRecord | null> {
+  async claim(
+    key: string,
+    now: number,
+    fingerprint?: string,
+  ): Promise<IdempotencyRecord | null> {
     const existing = this.map.get(key);
     if (this.fresh(existing, now)) return existing!;
-    const rec: IdempotencyRecord = { status: "in_progress", createdAt: now };
+    const rec: IdempotencyRecord = {
+      status: "in_progress",
+      createdAt: now,
+      fingerprint,
+    };
     this.map.set(key, rec);
     return null;
   }
 
   async complete(key: string, result: string, now: number): Promise<void> {
-    this.map.set(key, { status: "completed", result, createdAt: now });
+    // Preserve the fingerprint captured at claim time — it identifies the
+    // request for the key's whole lifetime, including after completion.
+    const fingerprint = this.map.get(key)?.fingerprint;
+    this.map.set(key, {
+      status: "completed",
+      result,
+      createdAt: now,
+      fingerprint,
+    });
   }
 
   async release(key: string): Promise<void> {

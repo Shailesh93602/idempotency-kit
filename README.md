@@ -49,6 +49,34 @@ await withIdempotency(key, fn, { store, waitRetries: 10, waitIntervalMs: 100 });
 - If `fn` **throws**, the claim is released so a later retry can run — a transient failure doesn't permanently poison the key.
 - Non-JSON results? Pass `serialize` / `deserialize`.
 
+### Reject a key reused for a different request
+
+A subtle, dangerous bug: a client reuses an idempotency key for a _different_ payload (a coding mistake, or a key generated too coarsely). Replaying the first result would silently return the wrong answer — e.g. confirm a $10 charge when the caller asked for $99. Stripe rejects this with a 400; so does this kit when you pass a request `fingerprint`:
+
+```ts
+import {
+  withIdempotency,
+  fingerprint,
+  IdempotencyFingerprintMismatchError,
+} from "idempotency-kit";
+
+try {
+  await withIdempotency(key, () => psp.charge(req.body), {
+    store,
+    fingerprint: fingerprint(req.body), // canonical hash of the payload
+  });
+} catch (e) {
+  if (e instanceof IdempotencyFingerprintMismatchError) {
+    return res.status(400).json({
+      error: "Idempotency-Key already used with different parameters",
+    });
+  }
+  throw e;
+}
+```
+
+`fingerprint()` is order-independent (`{a,b}` and `{b,a}` match), recurses into nested objects/arrays, and is runtime-agnostic (no `node:crypto`, so it works on edge/Deno/browsers). It guards against accidental reuse, not adversarial collisions. The fingerprint is captured on first claim and persists for the key's whole lifetime — a same-payload retry still replays cleanly.
+
 ## Rate limiting
 
 ```ts
@@ -77,8 +105,8 @@ Implement the small interface and stay correct across instances:
 
 ```ts
 interface IdempotencyStore {
-  claim(key, now): Promise<IdempotencyRecord | null>; // atomic insert-if-absent (SETNX)
-  complete(key, result, now): Promise<void>;
+  claim(key, now, fingerprint?): Promise<IdempotencyRecord | null>; // atomic insert-if-absent (SETNX), storing the fingerprint
+  complete(key, result, now): Promise<void>; // keep the claim's fingerprint
   release(key): Promise<void>;
   get(key): Promise<IdempotencyRecord | null>;
 }

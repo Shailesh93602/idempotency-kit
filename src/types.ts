@@ -20,16 +20,27 @@ export interface IdempotencyRecord {
   /** Serialized result, present once status is "completed". */
   result?: string;
   createdAt: number;
+  /**
+   * Optional request fingerprint captured when the key was first claimed. Lets
+   * the caller detect a key reused for a *different* request (the Stripe
+   * "Idempotency-Key already used with different parameters" guard).
+   */
+  fingerprint?: string;
 }
 
 export interface IdempotencyStore {
   /**
    * Atomically claim a key. If the key is free, create an `in_progress` record
-   * and return null (caller now owns execution). If it already exists, return
-   * the existing record without modifying it. This atomicity is the whole point
-   * — it's what makes two concurrent retries collapse to one execution.
+   * (persisting `fingerprint` if given) and return null (caller now owns
+   * execution). If it already exists, return the existing record without
+   * modifying it. This atomicity is the whole point — it's what makes two
+   * concurrent retries collapse to one execution.
    */
-  claim(key: string, now: number): Promise<IdempotencyRecord | null>;
+  claim(
+    key: string,
+    now: number,
+    fingerprint?: string,
+  ): Promise<IdempotencyRecord | null>;
   /** Mark a claimed key completed with its serialized result. */
   complete(key: string, result: string, now: number): Promise<void>;
   /** Drop an in_progress claim (on failure) so a later retry can run. */
