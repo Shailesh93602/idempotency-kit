@@ -84,3 +84,24 @@ describe("RateLimiter", () => {
     expect(() => new RateLimiter({ store, limit: 1, windowMs: 0 })).toThrow();
   });
 });
+
+describe("MemoryRateLimitStore memory bounds", () => {
+  it("evicts drained keys instead of retaining every key ever seen", async () => {
+    // A per-IP limiter sees unbounded unique keys; per-call pruning only ever
+    // shrinks keys you touch again, so without a sweep every IP stays resident.
+    const store = new MemoryRateLimitStore(50); // sweep every 50 records
+    for (let i = 0; i < 1000; i++) {
+      await store.record(`ip-${i}`, i * 1000, 10_000, 5);
+    }
+    expect(store.size).toBeLessThan(70); // only the still-active window survives
+  });
+
+  it("keeps keys whose window is still live", async () => {
+    const store = new MemoryRateLimitStore(10);
+    for (let i = 0; i < 100; i++)
+      await store.record(`ip-${i}`, 5000, 60_000, 5);
+    expect(store.size).toBe(100);
+    expect(store.sweep(5000 + 60_000, 60_000)).toBe(100);
+    expect(store.size).toBe(0);
+  });
+});

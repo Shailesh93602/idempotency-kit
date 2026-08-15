@@ -151,3 +151,119 @@ describe("withIdempotency", () => {
     expect(replay.replayed).toBe(true);
   });
 });
+
+describe("fingerprint — values that must not silently collide", () => {
+  it("distinguishes payloads that differ only by a Date", () => {
+    // Regression: a Date has no own enumerable keys, so a naive canonicalizer
+    // turns every Date into `{}` — two different scheduled charges would share
+    // a fingerprint and the guard would replay the wrong one.
+    const a = fingerprint({
+      amount: 1000,
+      scheduledAt: new Date("2026-01-01"),
+    });
+    const b = fingerprint({
+      amount: 1000,
+      scheduledAt: new Date("2026-12-31"),
+    });
+    expect(a).not.toBe(b);
+    // ...and matches the JSON representation, so a serialized retry still hits.
+    expect(a).toBe(
+      fingerprint({ amount: 1000, scheduledAt: "2026-01-01T00:00:00.000Z" }),
+    );
+  });
+
+  it("distinguishes Map, Set and a plain object", () => {
+    const m = fingerprint(new Map([["a", 1]]));
+    const s = fingerprint(new Set([1, 2]));
+    const o = fingerprint({});
+    expect(new Set([m, s, o]).size).toBe(3);
+    expect(fingerprint(new Map([["a", 1]]))).not.toBe(
+      fingerprint(new Map([["a", 2]])),
+    );
+    // Insertion order must not matter.
+    expect(
+      fingerprint(
+        new Map([
+          ["a", 1],
+          ["b", 2],
+        ]),
+      ),
+    ).toBe(
+      fingerprint(
+        new Map([
+          ["b", 2],
+          ["a", 1],
+        ]),
+      ),
+    );
+  });
+
+  it("distinguishes a class instance from an identical plain object", () => {
+    class Charge {
+      constructor(public amount: number) {}
+    }
+    expect(fingerprint(new Charge(1000))).not.toBe(
+      fingerprint({ amount: 1000 }),
+    );
+  });
+
+  it("the guard actually fires for a Date-bearing payload", async () => {
+    const store = new MemoryIdempotencyStore();
+    const charge = vi.fn(async () => ({ chargeId: "ch_1" }));
+    await withIdempotency("date-key", charge, {
+      store,
+      fingerprint: fingerprint({ amount: 1000, at: new Date("2026-01-01") }),
+    });
+    await expect(
+      withIdempotency("date-key", charge, {
+        store,
+        fingerprint: fingerprint({ amount: 1000, at: new Date("2026-12-31") }),
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyFingerprintMismatchError);
+    expect(charge).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MemoryIdempotencyStore memory bounds", () => {
+  it("evicts expired records instead of growing forever", async () => {
+    // Idempotency keys are unique per request, so expired records are never
+    // re-claimed — without an eviction sweep the map grows without bound.
+    const store = new MemoryIdempotencyStore(100, 50); // 100ms ttl, sweep every 50
+    let t = 0;
+    for (let i = 0; i < 1000; i++) {
+      t += 1000; // each key is well past the ttl by the next iteration
+      await withIdempotency(`k${i}`, async () => i, { store, now: () => t });
+    }
+    expect(store.size).toBeLessThan(60); // ~one sweep interval of live records
+  });
+
+  it("keeps records that are still within the ttl", async () => {
+    const store = new MemoryIdempotencyStore(60_000, 10);
+    for (let i = 0; i < 100; i++) {
+      await withIdempotency(`k${i}`, async () => i, { store, now: () => 1000 });
+    }
+    expect(store.size).toBe(100);
+    expect(store.sweep(1000 + 60_000)).toBe(100);
+    expect(store.size).toBe(0);
+  });
+});
+
+describe("concurrent fail-fast", () => {
+  it("a real concurrent loser fails fast with IdempotencyInProgressError", async () => {
+    const store = new MemoryIdempotencyStore();
+    const fn = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return "ok";
+    });
+    const results = await Promise.allSettled([
+      withIdempotency("race", fn, { store }),
+      withIdempotency("race", fn, { store }),
+    ]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      IdempotencyInProgressError,
+    );
+  });
+});
