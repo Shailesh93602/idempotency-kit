@@ -18,8 +18,12 @@ Both run on a tiny pluggable async **Store**. An in-memory store is included; im
 ## Install
 
 ```bash
-npm install idempotency-kit
+npm install github:Shailesh93602/idempotency-kit
 ```
+
+> Not on npm yet — the `idempotency-kit` name there belongs to an unrelated
+> package, so install from the repo. It builds itself on install (`prepare`),
+> and imports as `idempotency-kit`.
 
 ## Idempotency
 
@@ -75,7 +79,7 @@ try {
 }
 ```
 
-`fingerprint()` is order-independent (`{a,b}` and `{b,a}` match), recurses into nested objects/arrays, and is runtime-agnostic (no `node:crypto`, so it works on edge/Deno/browsers). It guards against accidental reuse, not adversarial collisions. The fingerprint is captured on first claim and persists for the key's whole lifetime — a same-payload retry still replays cleanly.
+`fingerprint()` is order-independent (`{a,b}` and `{b,a}` match), recurses into nested objects/arrays, and is runtime-agnostic (no `node:crypto`, so it works on edge/Deno/browsers). It honours `toJSON` (so a `Date` hashes by its ISO string, matching the serialized payload), and brands `Map`/`Set`/class instances so they can't collapse into each other. It guards against accidental reuse, not adversarial collisions. The fingerprint is captured on first claim and persists for the key's whole lifetime — a same-payload retry still replays cleanly.
 
 ## Rate limiting
 
@@ -118,6 +122,8 @@ interface RateLimitStore {
 ```
 
 The atomic step is deliberately the _only_ thing the store does — that's the part a distributed system must get right, and it's where you'd drop a Lua script.
+
+Both in-memory stores bound their own memory: idempotency keys are unique per request and rate-limit keys are unbounded (per-IP), so expired records and drained windows are actively evicted by an amortized sweep rather than left to accumulate. Tune with `new MemoryIdempotencyStore(ttlMs, sweepEvery)` / `new MemoryRateLimitStore(sweepEvery)`; `store.size` exposes the live count.
 
 ## Why these two together
 

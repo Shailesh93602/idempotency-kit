@@ -33,6 +33,11 @@ export class IdempotencyFingerprintMismatchError extends Error {
  * with a second pass + length) to a short hex string. Stable across processes
  * and runtime-agnostic — no node:crypto, so it runs on edge/Deno/browsers too.
  *
+ * Non-plain values are handled explicitly so they can't silently collide:
+ * `toJSON` is honoured (so Dates fingerprint by their ISO string, as
+ * JSON.stringify would), Maps/Sets fold in their sorted contents, and class
+ * instances are branded by constructor name.
+ *
  * Pass the result as `fingerprint` to withIdempotency to reject a key reused
  * for a different payload. Not a cryptographic hash — it guards against
  * accidental key reuse, not adversarial collisions.
@@ -57,6 +62,31 @@ export function fingerprint(value: unknown): string {
 function canonicalize(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+
+  // Honour toJSON the way JSON.stringify does. Without this a Date has no own
+  // enumerable keys, so every Date would canonicalize to `{}` — two payloads
+  // differing only by a date would share a fingerprint and the guard would
+  // silently replay the wrong result.
+  const toJSON = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === "function") {
+    return canonicalize((toJSON as () => unknown).call(value));
+  }
+
+  // Same trap for Map/Set/class instances: no own enumerable keys, so they'd all
+  // collapse to `{}`. Tag by brand and fold in the contents so they stay
+  // distinguishable. Entries are sorted for Map/Set because iteration order is
+  // insertion order, which isn't canonical across callers.
+  if (value instanceof Map) {
+    const entries = [...value.entries()]
+      .map(([k, v]) => `${canonicalize(k)}:${canonicalize(v)}`)
+      .sort();
+    return `Map{${entries.join(",")}}`;
+  }
+  if (value instanceof Set) {
+    const entries = [...value.values()].map(canonicalize).sort();
+    return `Set{${entries.join(",")}}`;
+  }
+
   // Default (code-unit) sort is intentional: a canonical fingerprint must order
   // keys identically on every machine. localeCompare would vary by locale.
   const keys = Object.keys(value).sort();
@@ -64,7 +94,14 @@ function canonicalize(value: unknown): string {
     (k) =>
       `${JSON.stringify(k)}:${canonicalize((value as Record<string, unknown>)[k])}`,
   );
-  return `{${entries.join(",")}}`;
+  // Brand non-plain objects so a class instance can't collide with a plain
+  // object that happens to carry the same fields.
+  const proto: unknown = Object.getPrototypeOf(value);
+  const brand =
+    proto === Object.prototype || proto === null
+      ? ""
+      : ((value as object).constructor?.name ?? "Object");
+  return `${brand}{${entries.join(",")}}`;
 }
 
 export interface WithIdempotencyOptions<T> {
