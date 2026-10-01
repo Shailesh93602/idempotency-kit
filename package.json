@@ -1,5 +1,5 @@
 {
-  "name": "idempotency-kit",
+  "name": "@shailesh93602/idempotency-kit",
   "version": "0.1.0",
   "type": "module",
   "description": "Make write endpoints retry-safe and abuse-resistant. Zero-dependency idempotency wrapper (the Stripe Idempotency-Key pattern) + sliding-window rate limiter, with a pluggable async store (in-memory included; bring your own Redis/Postgres). Runs offline, fully typed.",
